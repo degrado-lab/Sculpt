@@ -41,13 +41,16 @@ pip install ribbon-toolkit
 
 # Running Sculpt
 
+
+> [!IMPORTANT]
+> Sculpt the Sculpt algorithm is provided in `sculpt.py`. 
+> Full example code and data is coming soon!
+>
+
 Sculpt is provided as a simple python script for its current in-development release. You may download the repo as a zip file [here](https://github.com/degrado-lab/Sculpt/archive/refs/heads/main.zip), or use `git clone https://github.com/degrado-lab/Sculpt.git`.
 
-### Example System
-We provide an example structure, `PDB 5RGA`, with the transition state analogue for ligand KEMp-1.
-
-### Time to Sculpt
-In your python environment, you may run the algorithm using `python sculpt.py`
+### Running an Example
+Check back soon!
 
 # License
 
