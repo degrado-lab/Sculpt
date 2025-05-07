@@ -132,22 +132,23 @@ def fix_bonds(Chai_dir: Path, Fixed_bond_dir: Path, resnames: list, sdf_files: l
     """
     For each structure produced by CHAI-1, fix the bonds using the provided SDF files.
     """
-    for subdir in Chai_dir.iterdir():
-        if subdir.is_dir():
-            # Create a corresponding output directory for fixed bonds
-            target_subdir = Fixed_bond_dir / subdir.stem
-            make_directories(target_subdir)
-            for cif_file in list_files(subdir, '.cif'):
-                infile = Path(cif_file)
-                for resname, sdf_file in zip(resnames, sdf_files):
-                    out_file = target_subdir / Path(cif_file).name
-                    patch_files(
-                        cif_in=str(infile),
-                        cif_out=str(out_file),
-                        sdf_in=str(sdf_file),
-                        resname=str(resname),
-                    )
-                    infile = Path(out_file) #patch multiple into same file.
+    pass
+    # for subdir in Chai_dir.iterdir():
+    #     if subdir.is_dir():
+    #         # Create a corresponding output directory for fixed bonds
+    #         target_subdir = Fixed_bond_dir / subdir.stem
+    #         make_directories(target_subdir)
+    #         for cif_file in list_files(subdir, '.cif'):
+    #             infile = Path(cif_file)
+    #             for resname, sdf_file in zip(resnames, sdf_files):
+    #                 out_file = target_subdir / Path(cif_file).name
+    #                 patch_files(
+    #                     cif_in=str(infile),
+    #                     cif_out=str(out_file),
+    #                     sdf_in=str(sdf_file),
+    #                     resname=str(resname),
+    #                 )
+    #                 infile = Path(out_file) #patch multiple into same file.
 
 def add_hydrogens(Chai_dir: Path, hydrogens_dir: Path):
     """
@@ -183,14 +184,14 @@ def calculate_distance(hydrogens_dir: Path, distance_dir: Path):
                 # A future monomer release will be cleaner :)
                 ribbon.CalculatePairwiseDistance(
                     pdb_file=cif_file,
-                    atom_list_A=['B:1:N4_1'],
+                    atom_list_A=['B:1:H07'],
                     atom_list_B=['A:129:OD1'],
                     output_file=out_file_OD1,
                     average=True,
                 ).run()
                 ribbon.CalculatePairwiseDistance(
                     pdb_file=cif_file,
-                    atom_list_A=['B:1:N4_1'],
+                    atom_list_A=['B:1:H07'],
                     atom_list_B=['A:129:OD2'],
                     output_file=out_file_OD2,
                     average=True,
@@ -266,7 +267,7 @@ def get_top_designs(Chai_dir: Path, distance_dir: Path, top_design_dir: Path, to
                         f.write(line)
 
 
-def sculpt(input_dir: Path, run_dir: Path, num_cycles: int, input_smiles: str,
+def sculpt(input_dir: Path, run_dir: Path, num_cycles: int, ligand_smiles: str, ligand_SDF: Path,
            residues_to_change: str, lmpnn_design_num: int, top_structures_num: int, scheduler: str = 'local', queue: str = '*', node_name: str = '*',
            distances: list = [], torsions: list = [], angles: list = []):
     """
@@ -316,19 +317,19 @@ def sculpt(input_dir: Path, run_dir: Path, num_cycles: int, input_smiles: str,
         make_directories(current_dir, em_dir, LMPNN_dir, Chai_dir, hydrogens_dir, distance_dir, top_design_dir)
 
         # Step 1: Energy Minimization.
-        energy_minimization(previous_dir, em_dir, '6NT_ideal.sdf', scheduler=scheduler, queue=queue, node_name=node_name, custom_bonds=distances, custom_torsions=torsions, custom_angles=angles)
+        energy_minimization(previous_dir, em_dir, str(ligand_SDF), scheduler=scheduler, queue=queue, node_name=node_name, custom_bonds=distances, custom_torsions=torsions, custom_angles=angles)
 
         # Step 2: Run LigandMPNN for sequence design.
         run_ligand_mpnn(em_dir, LMPNN_dir, lmpnn_design_num, residues_to_change, temperature=0.2)
 
         # Step 3: Run CHAI-1 for structure prediction.
-        run_chai(LMPNN_dir, Chai_dir, input_smiles, NUM_LIGANDS, scheduler=scheduler, queue=queue, node_name=node_name)
+        run_chai(LMPNN_dir, Chai_dir, ligand_smiles, NUM_LIGANDS, scheduler=scheduler, queue=queue, node_name=node_name)
 
         # Step 3.5: Fix bonds in the generated structures.
-        fix_bonds(Chai_dir, Fixed_bonds_dir, ['LIG2'], ['6NT_ideal.sdf'])
+        #fix_bonds(Chai_dir, Fixed_bonds_dir, ['LIG2'], ['6NT_ideal.sdf']) #Not necessary here.
 
         # Step 4: Add hydrogens to predicted structures.
-        add_hydrogens(Fixed_bonds_dir, hydrogens_dir)
+        add_hydrogens(Chai_dir, hydrogens_dir)
 
         # Step 5: Calculate distances.
         calculate_distance(hydrogens_dir, distance_dir)
