@@ -4,7 +4,7 @@
 
 Achieving Å‑level catalytic precision by co‑optimizing backbone and sequence on any user‑defined geometric function.
 
-**Authors**: Nicholas Freitas, Giovanni Alviles, Ian Bakanas
+**Authors**: Nicholas Freitas, Giovanni Aviles, Ian Bakanas
 
 > [!IMPORTANT]
 > Sculpt is in-development. Alpha code is provided for research & collaboration.
