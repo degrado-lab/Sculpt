@@ -44,13 +44,15 @@ pip install ribbon-toolkit
 
 > [!IMPORTANT]
 > Sculpt the Sculpt algorithm is provided in `sculpt.py`. 
-> Full example code and data is coming soon!
+> A simple example is found in `run_example.py`
 >
 
 Sculpt is provided as a simple python script for its current in-development release. You may download the repo as a zip file [here](https://github.com/degrado-lab/Sculpt/archive/refs/heads/main.zip), or use `git clone https://github.com/degrado-lab/Sculpt.git`.
 
 ### Running an Example
-Check back soon!
+After installing the required packages, you may modify the parameters in `run_example.py`. Then, run:
+
+```python run_example.py```
 
 # License
 
