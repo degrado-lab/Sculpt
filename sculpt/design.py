@@ -48,6 +48,18 @@ class Design:
         """ Read structure from a file and set the structure attribute"""
         self.structure = ShimStructure(structure_file=str(filepath), force=True)
 
+    def load_sequence_from_structure(self):
+        """ Populates sequence from a pre-loaded structure"""
+        if self.structure is None:
+            raise ValueError("No structure data available.")
+
+        # TODO: Later, we should add a method to ShimStructure to get the sequence directly.
+        # structure.to_fasta(outfile) will write a fasta file to outfile.
+        # We can then read it back in:
+        with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp:
+            self.structure.to_fasta(tmp.name)
+            self.sequence = Path(tmp.name).read_text()
+
     def sequence_file(self, filepath: Union[str, Path]):
         """ Write sequence to a file"""
         path = Path(filepath)
@@ -67,7 +79,7 @@ class Design:
             self.structure.to_cif(str(path))
         else:
             raise ValueError("Structure file must have .pdb, .cif, or .mmcif suffix.")
-    
+
     @contextmanager
     def temp_sequence_file(self, suffix=".fasta"):
         """Context manager: create a temp sequence file that is auto-deleted."""

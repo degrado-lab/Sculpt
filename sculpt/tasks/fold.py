@@ -5,6 +5,7 @@ import ribbon
 
 from typing import List
 from sculpt.design import Design
+import random
 
 from shim import StandardMolecule
 
@@ -88,30 +89,6 @@ class SculptFolder:
         
         return folded_designs
 
-    # def add_hydrogens_to_file(self, structure_file, sdf_files=[]):
-    #     """Add hydrogens to a structure file using Reduce.
-
-    #     Args:
-    #         structure_file: The input structure file to add hydrogens to.
-    #         sdf_files: Optional list of SDF files containing ligands to add hydrogens to.
-    #     """
-    #     # Create a temp file for the output
-    #     outfile = tempfile.NamedTemporaryFile(delete=False, suffix='.pdb')
-
-    #     # make list of ligand names (LG1, LG2, etc.) and their corresponding sdf files
-    #     custom_ligands = []
-    #     for i, sdf in enumerate(sdf_files):
-    #         ligand_name = f'LIG'
-    #         custom_ligands.append( (ligand_name, sdf) )
-        
-    #     ribbon.Reduce(
-    #         pdb_input_file=structure_file,
-    #         pdb_output_file=outfile.name,
-    #         custom_ligands=custom_ligands
-    #     ).run()
-        
-    #     return outfile.name
-
     def add_hydrogens_to_file(self, structure_file, ligand_sdf_files=[]):
         """Add hydrogens to a structure file using Reduce.
 
@@ -165,6 +142,68 @@ class SculptFolder:
             ligand_sdf_files: Optional list of SDF files containing ligands to add hydrogens to.
         """
         self.fold(design, ligand_sdf_files=ligand_sdf_files)
+
+
+class DummyFolder:
+    """Dummy Folder class for testing, substituting Chai-1 generation with fetching an existing mock design."""
+    
+    def __init__(self, model='Chai-1', num_structures=5, add_hydrogens=False):
+        """Initialize the DummyFolder.
+        
+        Args:
+            model: The folding model to use (default 'Chai-1').
+            num_structures: The number of structures to generate per sequence (default 5).
+        """
+        self.model = model
+        self.add_hydrogens = add_hydrogens
+        self.num_structures = num_structures
+        
+        # Path to the specific mock data folder
+        self.data_dir = Path(__file__).resolve().parent.parent.parent / "data" / "1OHP_mutants"
+
+    def fold(self, design: Design, ligand_sdf_files: List[str] = []):
+        """Pretend to fold the FASTA file by randomly picking existing CIF files.
+        """
+        
+        print("Using DummyFolder to fold the FASTA file.")
+        
+        # We only accept 1 ligand SDF for now:
+        if ligand_sdf_files is not None and len(ligand_sdf_files) > 0:
+            ligand_sdf = ligand_sdf_files[0]
+            # Convert to SMILES:
+            ligand = StandardMolecule(structure_file = ligand_sdf)
+            ligand_smiles = ligand.get_smiles()
+        else:
+            ligand_smiles = None
+            
+        available_files = list(self.data_dir.glob("*.cif"))
+        if not available_files:
+            raise FileNotFoundError(f"No CIF files found in {self.data_dir} for DummyFolder")
+            
+        # Select random structures for mock output
+        output_files = random.choices(available_files, k=self.num_structures)
+        
+        folded_designs = []
+        for i, file in enumerate(output_files):
+            # Create the output Design object:
+            output_name = design.name + f"_fold_{i}"
+
+            # Make the new Design object:
+            fold_design = design.copy(set_parent=True)
+            fold_design.name = output_name
+            fold_design.load_structure(str(file))
+
+            # Add to the history:
+            fold_design.history.append("Folded using DummyFolder mock.")
+
+            folded_designs.append(fold_design)
+
+        return folded_designs
+
+    def __call__(self, design: Design, ligand_sdf_files: List[str] = []):
+        """Allow the Folder to be called directly."""
+        return self.fold(design, ligand_sdf_files=ligand_sdf_files)
+
 
 
 class SculptHydrogenAdder:

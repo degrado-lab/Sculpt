@@ -1,5 +1,6 @@
 # Local run data
 run_data/
+fig_data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

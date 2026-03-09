@@ -114,6 +114,11 @@ class ScoreBond:
             if self.absolute:
                 score = abs(score)
 
+            ### DEBUG
+            print(f"Distance value: {distance}")
+            print(f"Distance target: {self.bond.target_distance}")
+            print(f"Distance score: {score}")
+
         return score
 
     def __call__(self, design):
@@ -179,6 +184,11 @@ class ScoreAngle:
 
             if self.absolute:
                 score = abs(score)
+
+            ### DEBUG
+            print(f"Angle value: {angle_value}")
+            print(f"Angle target: {self.angle.target_angle}")
+            print(f"Angle score: {score}")
 
         return score
 
@@ -248,6 +258,11 @@ class ScoreDihedral:
 
             if self.absolute:
                 score = abs(score)
+
+            ### DEBUG
+            print(f"Dihedral value: {dihedral_value}")
+            print(f"Dihedral target: {self.torsion.target_angle}")
+            print(f"Dihedral score: {score}")
 
         return score
 

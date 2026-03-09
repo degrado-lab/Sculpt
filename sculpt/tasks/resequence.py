@@ -18,11 +18,11 @@ class SculptResequencer:
         Args:
             model: The folding model to use (default 'LigandMPNN').
             num_sequences: The number of sequences to generate (default 5).
-            fixed_residues: A string specifying fixed residues (default None).
+            fixed_residues: A string specifying fixed residues (default None). (e.g. "A1 A2 A3")
         """
         if model not in ['LigandMPNN', 'LASErMPNN']:
             raise ValueError(f"Model '{model}' not recognized. Choose 'LigandMPNN' or 'LASErMPNN'.")
-
+    
         self.model = model
         self.num_sequences = num_sequences
         self.fixed_residues = fixed_residues

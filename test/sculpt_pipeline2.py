@@ -37,7 +37,7 @@
                                       ASP-129                                                  
 
 """
-from sculpt import Sculpt, SculptOptimizer, SculptResequencer, SculptFolder
+from sculpt import Sculpt, SculptOptimizer, SculptResequencer, SculptFolder, DummyFolder
 from sculpt.geometry import Atom, CustomBond, CustomAngle, CustomTorsion
 from sculpt.tasks.score import SculptGeometricScoringFunction, ScoreBond, ScoreAngle, ScoreDihedral
 #from sculpt.sculpt import sculpt
@@ -51,9 +51,9 @@ import numpy as np
 
 # Here are the atoms we're working with:
 ### First protein chain and ligand (A and X)
-A_OD1 = Atom(chain='A', residue=25, name='OD1')
-A_OD2 = Atom(chain='A', residue=25, name='OD2')
-A_CG =  Atom(chain='A', residue=25, name='CG')
+A_OD1 = Atom(chain='A', residue=99, name='OD1')
+A_OD2 = Atom(chain='A', residue=99, name='OD2')
+A_CG =  Atom(chain='A', residue=99, name='CG')
 B_H =   Atom(chain='B', residue=1, name='H7')  # Ligand A
 B_N3 =  Atom(chain='B', residue=1, name='N3')  # Ligand A
 
@@ -63,7 +63,7 @@ A_X_bond = CustomBond(
     atom_1=A_OD1,
     atom_2=B_H,
     force_constant=20,
-    target_distance=1.5
+    target_distance=1.16
 )
 # Make sure the oxygen at 120 degrees, so the "bunny ears" orbital overlaps the proton:
 A_X_angle = CustomAngle(
@@ -136,14 +136,11 @@ Score_A_X_dihedral = ScoreDihedral(
 # Then, we create a scoring function where we pass in the structure.
 # This function gets the average distance from the target distance for each bond.
 
-# Enforce the "bunny ears" angle.
-# For run 20, I used: function = lambda design: (Score_A_X_bond(design)**2)  + (Score_A_X_angle(design) + Score_A_X_angle2(design) + Score_A_X_dihedral(design))/100
-# Now I'm upping the angle scoring to /10 instead of /100 to make it more important.
 def cos_adjust(x):
-    return (1/2) * (1 + np.cos( (2*np.pi * (x-180))/360 ))
+    return (1/2) * (1 + np.cos( (2*np.pi * (x))/360 )) # I used to subtract 180 from x, but this keeps the best score = 1 instead of 0.
 
 scoring_function = SculptGeometricScoringFunction(
-    function = lambda design: Score_A_X_bond(design)  + cos_adjust(Score_A_X_angle(design)) + cos_adjust(Score_A_X_angle2(design)) + cos_adjust(Score_A_X_dihedral(design))
+    function = lambda design: max(20-Score_A_X_bond(design), 0) + cos_adjust(Score_A_X_angle(design)) + cos_adjust(Score_A_X_angle2(design)) + cos_adjust(Score_A_X_dihedral(design))
 ) # Squared the bond score to make it more important (outweighs the angles better)
 
 
@@ -152,26 +149,19 @@ scoring_function = SculptGeometricScoringFunction(
 ################################ INPUTS AND OUTPUTS ####################################
 ########################################################################################
 
-#input_structures_dir = Path('./data/run_20_continued_final/')
-#run_dir = Path('./run_20_laser_HHH_from_18_with_continued2/')
-input_structures_dir = Path('./data/mini_scaffold_HHH_L25D/')
-run_dir = Path('./test_bs_4/')
+input_structures_dir = Path('./data/1OHP_monomer/')
+run_dir = Path('./1OHP_no_opt_30pop/')
 
 # Ligand information
 ligand_reference = input_structures_dir / 'KEMP1_TSA_h.sdf'
-#input_smiles = 'CC1=CC(=O)OC2=C1C=CC3=C2[NH]N=N3'
-#ligand_reference = input_structures_dir / 'KEMP1_h.sdf'
-#input_smiles = 'CC1=CC(=O)OC2=C1C=CC3=C2[NH]N=N3' #KEMP1_TSA
 
 # Which residues do we allow to change?
-fixed_residues = "A25"
+fixed_residues = "A99"
 
 # Pipeline parameters
 num_cycles = 15
 lmpnn_design_num = 10      # Number of sequences to generate per structure (x5 Chai per sequence)
 top_designs_num = 3       # Number of top designs to keep per cycle
-#lmpnn_design_num = 1      # Number of sequences to generate per structure (x5 Chai per sequence)
-#top_designs_num = 1       # Number of top designs to keep per cycle
 
 structure_input_dir = Path(input_structures_dir)
 current_input_designs = []
@@ -185,18 +175,29 @@ from sculpt.design import Design
 # new_design.structure.standardize(standard_molecules=[], renumber=True)
 # new_design.structure_file('test.cif')
 
-# Test scoring function:
-#print(scoring_function.score(new_design))
+# # Test scoring function:
+# print('Score components:')
+# a =  max(10-Score_A_X_bond(new_design), 0)
+# b = cos_adjust(Score_A_X_angle(new_design))
+# c = cos_adjust(Score_A_X_angle2(new_design))
+# d = cos_adjust(Score_A_X_dihedral(new_design))
+# print(a, b, c, d)
+# print('Total score:', a + b + c + d)
+# #print(scoring_function.score(new_design))
 
 Sculpt( optimizer=optimizer,
        resequencer=SculptResequencer(model='LASErMPNN', num_sequences=lmpnn_design_num, fixed_residues=fixed_residues),
        folder=SculptFolder(model='Chai-1', add_hydrogens=True),
+       #folder=DummyFolder(),
        scoring_function=scoring_function,
+       # Random number 0 to 10:
+       #scoring_function=SculptGeometricScoringFunction(function = lambda design: np.random.uniform(0, 10)),
        structure_input_dir=input_structures_dir,
        num_cycles=num_cycles,
        run_dir=run_dir,
        sdf_files=[ligand_reference],
        top_designs_num=top_designs_num,
        cycle_retry=5,
-       pop_size=1,
+       pop_size=30,
        )
+
