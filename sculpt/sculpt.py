@@ -1,11 +1,12 @@
+from sculpt.ga.select import TournamentSelection
 from sculpt.tasks.optimize import SculptOptimizer 
 from sculpt.tasks.resequence import SculptResequencer
 from sculpt.tasks.fold import SculptFolder, SculptHydrogenAdder
 from sculpt.tasks.score import SculptGeometricScoringFunction
 
-from sculpt.ga.select import RouletteWheelSelection
-from sculpt.ga.mutate import SimpleMutation
-from sculpt.ga.crossover import SimpleCrossover
+from sculpt.ga.select import RouletteWheelSelection, TournamentSelection
+from sculpt.ga.mutate import SimpleMutation, DirectedMutation
+from sculpt.ga.crossover import SimpleCrossover, SpatialCrossover
 
 from sculpt.reporting.reporting import visualize_population_clusters
 
@@ -18,26 +19,31 @@ from pathlib import Path
 import random
 import numpy as np
 
-def _write_statistics(generation_designs, run_dir: Path, cycle_dir: Path, cycle_idx: int):
+def _write_statistics(generation_designs, parents_reference, run_dir: Path, cycle_dir: Path, cycle_idx: int):
     stats_csv = run_dir / 'run_statistics.csv'
     all_sequences_csv = run_dir / 'all_sequences.csv'
     scores = [d.score for d in generation_designs if d.score is not None]
     pop_size = len(generation_designs)
+    parent_scores = [d.score for d in parents_reference if d.score is not None]
     
     if scores:
-        avg_fitness = np.mean(scores)
-        min_fitness = np.min(scores)
-        max_fitness = np.max(scores)
-        std_fitness = np.std(scores)
-        sum_fitness = np.sum(scores)
+        avg_fitness = np.nanmean(scores)
+        min_fitness = np.nanmin(scores)
+        max_fitness = np.nanmax(scores)
+        std_fitness = np.nanstd(scores)
+        sum_fitness = np.nansum(scores)
+
+        # Calculate Selection Intensity:
+        selection_intensity = (np.nanmean(parent_scores) - avg_fitness) / std_fitness
     else:
         avg_fitness = min_fitness = max_fitness = std_fitness = sum_fitness = float('nan')
+        selection_intensity = float('nan')
         
     write_header = not stats_csv.exists()
     with open(stats_csv, 'a') as f:
         if write_header:
-            f.write('cycle,pop_size,avg_fitness,min_fitness,max_fitness,std_fitness,sum_fitness\n')
-        f.write(f'{cycle_idx},{pop_size},{avg_fitness},{min_fitness},{max_fitness},{std_fitness},{sum_fitness}\n')
+            f.write('cycle,pop_size,selection_intensity,avg_fitness,min_fitness,max_fitness,std_fitness,sum_fitness\n')
+        f.write(f'{cycle_idx},{pop_size},{selection_intensity},{avg_fitness},{min_fitness},{max_fitness},{std_fitness},{sum_fitness}\n')
 
     # Write all sequences to a CSV file
     write_header = not all_sequences_csv.exists()
@@ -73,27 +79,38 @@ def _write_statistics(generation_designs, run_dir: Path, cycle_dir: Path, cycle_
                 for res, count in counts.items():
                     f.write(f'{pos},{res},{count}\n')
 
-def sculpt(optimizer: SculptOptimizer, 
-            resequencer: SculptResequencer, 
-            folder: SculptFolder, 
-            scoring_function: SculptGeometricScoringFunction,
-            structure_input_dir,
-            num_cycles: int = 10,
-            run_dir: str = None,
-            sdf_files: list = [],
-            top_designs_num: int = 5,
-            pop_size: int = 20,
-            cycle_retry: int = 5):
+def sculpt(
+        folder: SculptFolder,
+        fixers: list,
+        selector,
+        mutator,
+        crossover,
+        initial_population_mutator,
+        scoring_function: SculptGeometricScoringFunction,
+        num_cycles: int,
+        pop_size: int,
+        structure_input_dir,
+        run_dir: str = None,
+        sdf_files: list = []
+):
     """Main function to run the Sculpt pipeline for ligand design and optimization.
     This function orchestrates the complete Sculpt pipeline, including energy minimization,
     sequence design with LigandMPNN, structure prediction with CHAI-1, hydrogen addition,
     scoring, and iterative refinement over multiple cycles.
 
     Args:
-        optimizer: Optimizer object for structure optimization.
-        resequencer: Resequencer object for generating new sequences.
         folder: Folder object for structure prediction.
+        fixers: List of objects to fix structures.
+        selector: Selection operator for the GA.
+        mutator: Mutation operator for the GA.
+        crossover: Crossover operator for the GA.
+        initial_population_mutator: Mutation operator for generating initial population.
         scoring_function: Scoring function for evaluating designs.
+        num_cycles: Number of GA cycles.
+        pop_size: Population size.
+        structure_input_dir: Directory containing input structures.
+        run_dir: Directory to save run outputs.
+        sdf_files: List of SDF files for ligands.
     """
 
     # Grab the current input structures:
@@ -111,37 +128,19 @@ def sculpt(optimizer: SculptOptimizer,
             input_designs.append(input_design)
 
     # We'll pad out the rest of the first generation with highly-mutated sequences, based on the input sequences:
-    mutator = SimpleMutation(mutation_rate=1.0, mutations_per_sequence=30, temperature=2.0) # instead of 10, 1
     copied_input_designs = []
     for i in range(pop_size - len(input_designs)):
         # Need unique names
-        new_input_design = random.choice(input_designs).copy()
-        new_input_design.name = f'{new_input_design.name}_mut_{i}'
+        new_input_design = random.choice(input_designs).copy(set_parent=True)
         copied_input_designs.append(new_input_design)
     
+    # TODO: Take this loop away, make it one-liner
     copied_input_designs_with_mutations = []
     for design in copied_input_designs:
-        mutated_design = mutator.mutate([design])[0]
+        mutated_design = initial_population_mutator.mutate([design], unique_naming=True)[0]
         copied_input_designs_with_mutations.append(mutated_design)
 
     input_designs.extend(copied_input_designs_with_mutations)
-    
-    # # Create standardized input structures:
-    # standard_molecules = [StandardMolecule(structure_file=sdf_file) for sdf_file in sdf_files]
-    # hydrogens_on_input_files = False # Assume no hydrogens initially
-    # for design in input_designs:
-    #     design.structure.standardize(standard_molecules=standard_molecules, use_hydrogens=hydrogens_on_input_files) # do we want True here?
-
-    # #Next, add hydrogens to the input structures:
-    # if not hydrogens_on_input_files:
-    #     hydrogen_adder = SculptHydrogenAdder()
-    #     for i, design in enumerate(input_designs):
-    #         design_with_h = hydrogen_adder.add_hydrogens(design, sdf_files)
-    #         input_designs[i] = design_with_h
-    # else:
-    #     print('Input structures already have hydrogens. Skipping hydrogen addition.')
-
-
         
     # List input structures:
     print('Input structures:')
@@ -181,7 +180,7 @@ def sculpt(optimizer: SculptOptimizer,
         # Make the directory for this cycle:
         cycle_dir = run_dir / f'cycle_{i}'
         cycle_dir.mkdir(parents=True, exist_ok=True)
-
+        
         # Make the directories for each step: 
         step_dirs = ['0_Folded', '1_Reproduction', '2_Crossover', '3_Mutation']
         for step in step_dirs:
@@ -192,6 +191,10 @@ def sculpt(optimizer: SculptOptimizer,
 
             # Fold design, usually 5x structures per design
             folds = folder.fold(design, ligand_sdf_files=sdf_files)
+
+            # Fix structures using the objects in fixers:
+            for fixer in fixers:
+                folds = [fixer(fold) for fold in folds]
             
             # Score each fold
             for f in folds: f.score = scoring_function.score(f)
@@ -207,27 +210,25 @@ def sculpt(optimizer: SculptOptimizer,
             design.sequence_file(cycle_dir / '0_Folded' / f'{design.name}.fasta')
 
         ### Step 1: Selection / Reproduction
-        # TODO: Move the RouletteWheelSelection object to be passed in as an input
-        selector = RouletteWheelSelection(highest=True)
-        parents_reference = selector.select(current_generation, len(current_generation), plot_file=cycle_dir / '1_Reproduction' / f'score_pie_chart_{i}.png', return_reference=True) #returns a REFERENCE of the parents
+        parents_reference = selector.select(current_generation, len(current_generation), plot_file=cycle_dir / '1_Reproduction' / f'score_pie_chart_{i}.png')
 
         ### Step 2: Crossover
-        # TODO: Move the SimpleCrossover object to be passed in as an input
-        crossover = SimpleCrossover(crossover_rate=0.5)
         next_generation = crossover.crossover(parents_reference) # returns COPIES as children
         for design in next_generation:
             design.sequence_file(cycle_dir / '2_Crossover' / f'{design.name}.fasta')
 
         ### Step 3: Mutation 
-        # TODO: Move the SimpleMutation object to be passed in as an input
-        mutator = SimpleMutation(mutation_rate=0.5, mutations_per_sequence=1, temperature=1.0)
-        next_generation = mutator.mutate(next_generation)        # modifies children IN PLACE
+        try:
+            next_generation = mutator.mutate(next_generation, save_EM_structures_dir=cycle_dir / '3_Mutation', unique_naming=False)        # modifies children IN PLACE
+        except TypeError:
+            # Fallback for mutators that do not accept save_EM_structures_dir
+            next_generation = mutator.mutate(next_generation, unique_naming=False)
         for design in next_generation:
             design.sequence_file(cycle_dir / '3_Mutation' / f'{design.name}.fasta')
         
         ### Step 4: Write Statistics & Plots
         try:
-            _write_statistics(current_generation, run_dir, cycle_dir, i)
+            _write_statistics(current_generation, parents_reference, run_dir, cycle_dir, i)
 
             fig, labels, metrics = visualize_population_clusters(
                 seqs=[d.sequence for d in current_generation],

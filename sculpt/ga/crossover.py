@@ -99,15 +99,19 @@ class SimpleCrossover:
                 parent2 = population[indices[i+1]]
             else:
                 # Odd number of individuals, just copy the last one without crossover
-                offspring_pop.append(parent1.copy())
+                copied_child = parent1.copy()
+                if unique_naming:
+                    copied_child.name = generate_id()
+                offspring_pop.append(copied_child)
                 continue
                 
             # Create offspring
             child1 = parent1.copy(set_parent=True)
-            child1.parents = [parent1, parent2]
-            
             child2 = parent2.copy(set_parent=True)
-            child2.parents = [parent2, parent1]
+
+            if unique_naming:
+                child1.name = generate_id()
+                child2.name = generate_id()
             
             # Apply crossover based on rate
             if random.random() < self.crossover_rate and child1.sequence and child2.sequence:
@@ -123,25 +127,18 @@ class SimpleCrossover:
                     
                     new_seq1 = seq1[:cx_point] + seq2[cx_point:]
                     new_seq2 = seq2[:cx_point] + seq1[cx_point:]
-                    
-                    if unique_naming:
-                        c1_name = generate_id()
-                        c2_name = generate_id()
-                    else:
-                        c1_name = f"{parent1.name}_x_{parent2.name}"
-                        c2_name = f"{parent2.name}_x_{parent1.name}"
                         
-                    child1.name = c1_name
-                    child2.name = c2_name
-                    
                     # Create new fasta text
-                    child1.sequence = _create_fasta(c1_name, new_seq1)
-                    child2.sequence = _create_fasta(c2_name, new_seq2)
+                    child1.sequence = _create_fasta(child1.name, new_seq1)
+                    child2.sequence = _create_fasta(child2.name, new_seq2)
 
                     # Because we modified the sequence, the structure is no longer strictly matching it.
                     # We should probably clear it since fold step will regenerate it.
                     child1.structure = None
                     child2.structure = None
+
+                    child1.parents = [parent1, parent2]
+                    child2.parents = [parent2, parent1]
                     
                     child1.history.append(f"Crossover with {parent2.name} at position {cx_point}")
                     child2.history.append(f"Crossover with {parent1.name} at position {cx_point}")
@@ -211,8 +208,19 @@ class SpatialCrossover:
                 parent2 = population[indices[i+1]]
             else:
                 # Odd number of individuals, just copy the last one without crossover
-                offspring_pop.append(parent1.copy())
+                copied_child = parent1.copy()
+                if unique_naming:
+                    copied_child.name = generate_id()
+                offspring_pop.append(copied_child)
                 continue
+
+            # Create offspring
+            child1 = parent1.copy(set_parent=True)
+            child2 = parent2.copy(set_parent=True)
+
+            if unique_naming:
+                child1.name = generate_id()
+                child2.name = generate_id()
                 
             # Apply crossover based on rate and availability of structures
             if random.random() < self.crossover_rate and parent1.structure and parent2.structure:
@@ -257,28 +265,15 @@ class SpatialCrossover:
                             residues_c1.append(res2[idx])
                             residues_c2.append(res1[idx])
                     
-                    # Create offspring objects
-                    child1 = parent1.copy(set_parent=True)
-                    child2 = parent2.copy(set_parent=True)
                     child1.parents = [parent1, parent2]
                     child2.parents = [parent2, parent1]
-                    
-                    if unique_naming:
-                        c1_name = generate_id()
-                        c2_name = generate_id()
-                    else:
-                        c1_name = f"{parent1.name}_spatial_{parent2.name}"
-                        c2_name = f"{parent2.name}_spatial_{parent1.name}"
                         
-                    child1.name = c1_name
-                    child2.name = c2_name
-                    
                     # Create new fasta text
                     seq1_str = self._residues_to_seq(residues_c1)
                     seq2_str = self._residues_to_seq(residues_c2)
                     
-                    child1.sequence = _create_fasta(c1_name, seq1_str)
-                    child2.sequence = _create_fasta(c2_name, seq2_str)
+                    child1.sequence = _create_fasta(child1.name, seq1_str)
+                    child2.sequence = _create_fasta(child2.name, seq2_str)
 
                     # Clear structures as they need folding for the new sequences
                     child1.structure = None
@@ -293,8 +288,7 @@ class SpatialCrossover:
                     # In case of any error in spatial processing, fall back to simple copies
                     pass
             
-            # Default fallback: Copy parents if crossover not performed or failed
-            offspring_pop.extend([parent1.copy(), parent2.copy()])
+            offspring_pop.extend([child1, child2])
             
         return offspring_pop
 

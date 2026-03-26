@@ -10,6 +10,12 @@ import numpy as np
 from typing import Sequence, Protocol, List, TypeVar, Tuple
 
 from sculpt.id import generate_id
+from sculpt.tasks.fold import SculptFolder, SculptHydrogenAdder
+from sculpt.tasks.optimize import SculptOptimizer
+from sculpt.tasks.resequence import SculptResequencer
+
+from shim import StandardMolecule
+from pathlib import Path
 
 Design = TypeVar('Design')
 
@@ -67,6 +73,7 @@ blosum62_array = np.array([[4.0, -1.0, -2.0, -2.0, 0.0, -1.0, -1.0, 0.0, -2.0, -
                         [-3.0, -3.0, -4.0, -4.0, -2.0, -2.0, -3.0, -2.0, -2.0, -3.0, -2.0, -3.0, -1.0, 1.0, -4.0, -3.0, -2.0, 11.0, 2.0, -3.0], 
                         [-2.0, -2.0, -2.0, -3.0, -2.0, -1.0, -2.0, -3.0, 2.0, -1.0, -1.0, -2.0, -1.0, 3.0, -3.0, -2.0, -2.0, 2.0, 7.0, -1.0], 
                         [0.0, -3.0, -3.0, -3.0, -1.0, -2.0, -2.0, -3.0, -3.0, 3.0, 1.0, -2.0, 1.0, -1.0, -2.0, -2.0, 0.0, -3.0, -1.0, 4.0]])
+uniform_array = np.ones_like(blosum62_array) / len(AA_single_letter_codes)
 
 
 class SimpleMutation:
@@ -113,7 +120,7 @@ class SimpleMutation:
         ### DEBUG
         #print(self.transition_probs)
 
-    def mutate(self, population: Sequence[Design], unique_naming: bool = True) -> List[Design]:
+    def mutate(self, population: Sequence[Design], unique_naming: bool = False) -> List[Design]:
         """Perform mutation on a population.
         
         Args:
@@ -172,10 +179,13 @@ class SimpleMutation:
                         mutated = True
                         new_seq = "".join(seq_chars)
                         
+                        # If we don't use unique_naming, we just keep the same name as the parent.
+                        # This is because we rename in the "crossover" step. Mutating is just a 
+                        # modification of the parent sequence, not a new design.
                         if unique_naming:
                             c_name = generate_id()
                         else:
-                            c_name = f"{parent.name}_mut"
+                            c_name = f"{parent.name}"
                             
                         child.name = c_name
                         child.sequence = _create_fasta(c_name, new_seq)
@@ -191,7 +201,7 @@ class SimpleMutation:
             print(child.sequence)
         return mutated_pop
 
-    def __call__(self, population: Sequence[Design], unique_naming: bool = True) -> List[Design]:
+    def __call__(self, population: Sequence[Design], unique_naming: bool = False) -> List[Design]:
         """Allow the mutation strategy to be called directly.
         
         Args:
@@ -202,3 +212,190 @@ class SimpleMutation:
             The result of the mutate method.
         """
         return self.mutate(population, unique_naming=unique_naming)
+
+class DirectedMutation:
+    """Sequence mutation using user-provided force constraints in energy minimization, followed by MPNN.
+    Structure is folded first, if necessary.
+
+    Args:
+        mutation_rate: Probability of a sequence undergoing mutation.
+        resequencer: Resequencer object for generating new sequences.
+        optimizer: Optimizer object for structure optimization.
+        folder: Folder object for structure folding.
+        sdf_files: List of SDF files for ligand parameterization.
+        refold: If True, refold the structure even if it exists.
+    """
+
+    def __init__(
+        self,
+        mutation_rate: float = 0.5,
+        resequencer: SculptResequencer = None,
+        optimizer: SculptOptimizer = None,
+        folder: SculptFolder = None,
+        hydrogen_adder: SculptHydrogenAdder = None,
+        refold: bool = False,
+        sdf_files: List[str] = None,
+    ):
+        self.mutation_rate = mutation_rate
+        self.resequencer = resequencer
+        self.optimizer = optimizer
+        self.folder = folder
+        self.hydrogen_adder = hydrogen_adder
+        self.refold = refold
+        self.sdf_files = sdf_files
+
+    def mutate(self, population: Sequence[Design], unique_naming: bool = False, save_EM_structures_dir: str = None) -> List[Design]:
+        """Perform directed mutation on a population.
+        
+        Args:
+            population: Sequence of Design objects to mutate.
+            unique_naming: If True, generate unique names for the offspring.
+            save_EM_structures_dir: Directory to save the EM structures of the mutated designs.
+        Returns:
+            A new list of mutated (or original) Design objects.
+        """
+        
+
+        mutated_pop = []
+        for parent in population:
+            # Decide if this child mutates
+            if random.random() < self.mutation_rate:
+                # Start with a copy
+                child = parent.copy()
+                
+                # 1) Fold/Hydrogens
+                if self.refold or child.structure is None:
+                    folder = self.folder
+                    folded_results = folder.fold(child, ligand_sdf_files=self.sdf_files)
+                    if folded_results:
+                        child = folded_results[0]
+                elif self.hydrogen_adder:
+                    h_adder = self.hydrogen_adder
+                    child = h_adder.add_hydrogens(child, ligand_sdf_files=self.sdf_files)
+
+                # DEBUG
+                # # write temporary structure file:
+                # child.structure_file("temp_structure.pdb")
+                # standard_molecules = [StandardMolecule(structure_file=sdf_file) for sdf_file in self.sdf_files]
+                # hydrogens_on_input_files = False # Assume no hydrogens initially
+                # child.structure.standardize(standard_molecules=standard_molecules, use_hydrogens=hydrogens_on_input_files)
+
+                # 2) Energy-minimize with user-provided constraints
+                optimizer = self.optimizer
+                child = optimizer.optimize(child, sdf_files=self.sdf_files, unique_naming=unique_naming)
+                
+                if save_EM_structures_dir:
+                    save_path = Path(save_EM_structures_dir) / f"{child.name}_EM.pdb"
+                    child.structure_file(save_path)
+
+                # 3) Run LigandMPNN/LaserMPNN to generate the new sequence
+                resequencer = self.resequencer
+                # Resequencer returns a list of designs
+                reseq_results = resequencer.resequence(child, unique_naming=unique_naming)
+                if reseq_results:
+                    child = reseq_results[0]
+                    child.history.append(f"DirectedMutation applied (model={self.folder.model}, rate={self.mutation_rate})")
+                
+                mutated_pop.append(child)
+            else:
+                # No mutation, add a copy of the parent to the new population
+                mutated_pop.append(parent.copy())
+        
+        return mutated_pop
+
+    def __call__(self, population: Sequence[Design], unique_naming: bool = False,  save_EM_structures_dir: str = None) -> List[Design]:
+        """Allow the mutation strategy to be called directly.
+        
+        Args:
+            population: Sequence of Design objects to mutate.
+            unique_naming: If True, generate unique names for the offspring.
+            
+        Returns:
+            The result of the mutate method.
+        """
+        return self.mutate(population, unique_naming=unique_naming)
+
+
+class SimpleAndDirectedMutation:
+    """Sequence mutation using both Simple and Directed mutation strategies.
+    
+    Applies simple mutation first, followed by directed mutation, using their
+    respective mutation rates.
+
+    Args:
+        simple_mutation_rate: Probability of a sequence undergoing simple mutation.
+        directed_mutation_rate: Probability of a sequence undergoing directed mutation.
+        mutations_per_sequence: Number of point mutations to introduce if selected for simple mutation.
+        temperature: Controls how strictly to follow BLOSUM scores vs uniform random for simple mutation.
+        fixed_residues: A string specifying fixed residues for simple mutation (default None).
+        resequencer: Resequencer object for generating new sequences in directed mutation.
+        optimizer: Optimizer object for structure optimization in directed mutation.
+        folder: Folder object for structure folding in directed mutation.
+        hydrogen_adder: HydrogenAdder object for directed mutation.
+        refold: If True, refold the structure even if it exists in directed mutation.
+        sdf_files: List of SDF files for ligand parameterization in directed mutation.
+    """
+
+    def __init__(
+        self,
+        simple_mutation_rate: float = 0.5,
+        directed_mutation_rate: float = 0.5,
+        mutations_per_sequence: int = 1,
+        temperature: float = 1.0,
+        fixed_residues: str = None,
+        resequencer: SculptResequencer = None,
+        optimizer: SculptOptimizer = None,
+        folder: SculptFolder = None,
+        hydrogen_adder: SculptHydrogenAdder = None,
+        refold: bool = False,
+        sdf_files: List[str] = None,
+    ):
+        self.simple_mutation_rate = simple_mutation_rate
+        self.directed_mutation_rate = directed_mutation_rate
+        self.simple_mutation = SimpleMutation(
+            mutation_rate=simple_mutation_rate,
+            mutations_per_sequence=mutations_per_sequence,
+            temperature=temperature,
+            fixed_residues=fixed_residues
+        )
+        self.directed_mutation = DirectedMutation(
+            mutation_rate=directed_mutation_rate,
+            resequencer=resequencer,
+            optimizer=optimizer,
+            folder=folder,
+            hydrogen_adder=hydrogen_adder,
+            refold=refold,
+            sdf_files=sdf_files
+        )
+
+    def mutate(self, population: Sequence[Design], unique_naming: bool = False, save_EM_structures_dir: str = None) -> List[Design]:
+        """Perform both simple and directed mutation sequentially on a population.
+        
+        Args:
+            population: Sequence of Design objects to mutate.
+            unique_naming: If True, generate unique names for the offspring.
+            save_EM_structures_dir: Directory to save the EM structures of the sequentially mutated designs.
+            
+        Returns:
+            A new list of mutated (or original) Design objects.
+        """
+        # First apply simple mutation
+        pop_after_simple = self.simple_mutation.mutate(population, unique_naming=unique_naming)
+        
+        # Then apply directed mutation
+        final_pop = self.directed_mutation.mutate(pop_after_simple, unique_naming=unique_naming, save_EM_structures_dir=save_EM_structures_dir)
+        
+        return final_pop
+
+    def __call__(self, population: Sequence[Design], unique_naming: bool = False, save_EM_structures_dir: str = None) -> List[Design]:
+        """Allow the mutation strategy to be called directly.
+        
+        Args:
+            population: Sequence of Design objects to mutate.
+            unique_naming: If True, generate unique names for the offspring.
+            save_EM_structures_dir: Directory to save the EM structures of the sequentially mutated designs.
+            
+        Returns:
+            The result of the mutate method.
+        """
+        return self.mutate(population, unique_naming=unique_naming, save_EM_structures_dir=save_EM_structures_dir)

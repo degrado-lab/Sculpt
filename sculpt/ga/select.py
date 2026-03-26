@@ -147,41 +147,63 @@ def _scale_fitness(fitness, a, b):
 #         return returned_designs
 
 
-# class TournamentSelection:
-#     """Tournament selection using Design.score.
+class TournamentSelection:
+    """Tournament selection using Design.score.
 
-#     Args:
-#         tournament_size: number of contenders per tournament (default 3).
-#         with_replacement: whether to sample winners with replacement.
-#         highest: True to prefer high scores, False to prefer low scores.
-#     """
+    Args:
+        tournament_size: number of contenders per tournament (default 3).
+        with_replacement: whether to sample winners with replacement.
+        highest: True to prefer high scores, False to prefer low scores.
+    """
 
-#     def __init__(self, tournament_size: int = 3, with_replacement: bool = True, highest: bool = True):
-#         self.tournament_size = max(2, int(tournament_size))
-#         self.with_replacement = with_replacement
-#         self.highest = highest
+    def __init__(self, tournament_size: int = 3, with_replacement: bool = True, highest: bool = True):
+        self.tournament_size = max(2, int(tournament_size))
+        self.with_replacement = with_replacement
+        self.highest = highest
 
-#     def select(self, population: Sequence[Design], k: int) -> List[Design]:
-#         if k <= 0:
-#             return []
-#         n = len(population)
-#         if n == 0:
-#             return []
-#         selected: List[Design] = []
-#         indices = list(range(n))
-#         for _ in range(k):
-#             contenders = random.sample(indices, min(self.tournament_size, len(indices)))
-#             best_idx = max(contenders, key=lambda i: _score_value(population[i], self.highest))
-#             selected.append(population[best_idx])
-#             if not self.with_replacement:
-#                 # remove the chosen index from the pool so it cannot be chosen again
-#                 indices.remove(best_idx)
-#                 if not indices:
-#                     break
+    def select(self, population: Sequence[Design], k: int, plot_file: Optional[str] = None, return_reference: bool = False) -> List[Design]:
+        if k <= 0:
+            return []
+        n = len(population)
+        if n == 0:
+            return []
+        selected: List[Design] = []
+        indices = list(range(n))
 
-#         # Make copies:
-#         returned_designs = [design.copy() for design in selected]
-#         return returned_designs
+        for _ in range(k):
+            contenders = random.sample(indices, min(self.tournament_size, len(indices)))
+
+            def scorer(idx):
+                val = _score_value(population[idx], self.highest)
+                if np.isnan(val):
+                    return -np.inf if self.highest else np.inf
+                return val
+
+            best_idx = max(contenders, key=scorer) if self.highest else min(contenders, key=scorer)
+            selected.append(population[best_idx])
+
+            if not self.with_replacement:
+                indices.remove(best_idx)
+                if not indices:
+                    break
+        
+        try:
+            if plot_file is not None:
+                pop_scores = [d.score for d in population if d.score is not None]
+                sel_scores = [d.score for d in selected if d.score is not None]
+                _, bins, _ = plt.hist(pop_scores, alpha=0.5, label='Population')
+                plt.hist(sel_scores, bins=bins, color='red', alpha=0.5, label='Selected')
+                plt.legend()
+                plt.savefig(plot_file)
+                plt.close()
+        except Exception as e:
+            print(f"Error plotting histogram: {e}")
+
+        # Make copies:
+        if return_reference:
+            return selected
+        else:
+            return [design.copy() for design in selected]
 
 
 # class ElitismSelection:

@@ -12,7 +12,7 @@
                        /                  \                 /                   
                       /                    \\       -------C                    
                      /                       C------        \\                  
-                     /         LIG2          /                 \                 
+                     /         LIG          /                 \                 
                  ---C                      /                   \\               
            ------    --                   /                      \\             
        O1---            --                /                         C            
@@ -37,64 +37,75 @@
                                       ASP-129                                                  
 
 """
-from sculpt import Sculpt, SculptOptimizer, SculptResequencer, SculptFolder
+from sculpt.ga.mutate import SimpleAndDirectedMutation
+from sculpt import Sculpt, SculptOptimizer, SculptResequencer, SculptFolder, DummyFolder
 from sculpt.geometry import Atom, CustomBond, CustomAngle, CustomTorsion
-from sculpt.tasks.score import SculptGeometricScoringFunction, ScoreBond, ScoreAngle
-#from sculpt.sculpt import sculpt
-#from sculpt.geometry import Atom, CustomBond, CustomAngle, CustomTorsion
-#from sculpt.optimize import SculptOptimizer
-#from sculpt.score import SculptGeometricScoringFunction, ScoreBond
+from sculpt.tasks.score import SculptGeometricScoringFunction, ScoreBond, ScoreAngle, ScoreDihedral
+from sculpt.ga.select import TournamentSelection
+from sculpt.ga.crossover import SpatialCrossover
+from sculpt.ga.mutate import DirectedMutation, SimpleMutation
+from sculpt.alter import SculptResidueFlipper
 from pathlib import Path
 
+import numpy as np
+
+######################################################################################
+####################### DEFINING OUR ATOMS ###########################################
+######################################################################################
 
 # Here are the atoms we're working with:
 ### First protein chain and ligand (A and X)
-A_OD1 = Atom(chain='A', residue=37, name='OD1')
-A_OD2 = Atom(chain='A', residue=37, name='OD2')
-A_CG =  Atom(chain='A', residue=37, name='CG')
-C_H =   Atom(chain='B', residue=1, name='H1')  # Ligand A
-C_C3 =  Atom(chain='B', residue=1, name='C1')  # Ligand A
+A_OD1 = Atom(chain='A', residue=99, name='OD1')
+A_OD2 = Atom(chain='A', residue=99, name='OD2')
+A_CG =  Atom(chain='A', residue=99, name='CG')
+B_H =   Atom(chain='B', residue=1, name='H7')  # Ligand A
+B_N3 =  Atom(chain='B', residue=1, name='N3')  # Ligand A
 
 # And the forces we're applying to optimize:
 ### Get the proton close to Asp-oxygen:
 A_X_bond = CustomBond(
     atom_1=A_OD1,
-    atom_2=C_H,
+    atom_2=B_H,
     force_constant=20,
-    target_distance=1.5
+    target_distance=1.16
 )
 # Make sure the oxygen at 120 degrees, so the "bunny ears" orbital overlaps the proton:
 A_X_angle = CustomAngle(
     atom_1=A_CG,
     atom_2=A_OD1,
-    atom_3=C_H,
-    force_constant=50,
+    atom_3=B_H,
+    force_constant=150, #Upped from 50
     target_angle=120
 )
 # Make sure the proton's vibration vector is pointed towards the oxygen:
 A_X_angle2 = CustomAngle(
     atom_1=A_OD1,
-    atom_2=C_H,
-    atom_3=C_C3,
-    force_constant=50,
+    atom_2=B_H,
+    atom_3=B_N3,
+    force_constant=150, # Upped from 50
     target_angle=180
 )
 # And make sure the proton is in the right plane with respect to the Asp-oxygen and the CG:
+### BUG! In EasyMD, a torsion angle of 180 goes to 0 (and 0 goes to 180).
+### So to get to 0, we'll define a 180 target angle here, and then in scoring, we'll score against 0.
 A_X_torsion = CustomTorsion(
     atom_1=A_OD2,
     atom_2=A_CG,
     atom_3=A_OD1,
-    atom_4=C_H,
-    force_constant=20,
-    periodicity=2,
-    target_angle=0
+    atom_4=B_H,
+    force_constant=180, #Upped from 80
+    periodicity=1,
+    target_angle=0 # flipped here! Used to be 180
 )
-
-
-# Create the optimizer object with the custom restraints.
-optimizer = SculptOptimizer(custom_bonds=[A_X_bond],
-                            custom_torsions=[A_X_torsion],
-                            custom_angles=[A_X_angle, A_X_angle2])
+A_X_torsion_for_scoring = CustomTorsion(
+    atom_1=A_OD2,
+    atom_2=A_CG,
+    atom_3=A_OD1,
+    atom_4=B_H,
+    force_constant=180, #Upped from 80
+    periodicity=1,
+    target_angle=180 # flipped here! Used to be 0
+)
 
 ######################################################################################
 ######################### DEFINING THE SCORING FUNCTION ##############################
@@ -105,50 +116,120 @@ Score_A_X_bond = ScoreBond(
     bond=A_X_bond
 )
 
+Score_A_X_angle = ScoreAngle(
+    angle=A_X_angle,
+    absolute=True
+)
+Score_A_X_angle2 = ScoreAngle(
+    angle=A_X_angle2,
+    absolute=True
+)
+
+Score_A_X_dihedral = ScoreDihedral(
+    torsion=A_X_torsion_for_scoring,  # applying our bug-patch here
+    absolute=True
+)
+
 # Then, we create a scoring function where we pass in the structure.
 # This function gets the average distance from the target distance for each bond.
+
+def cos_adjust_min_at_180(x): # When x = 0, score = 1. When x = 180, score = 0.
+    return (1/2) * (1 + np.cos( (2*np.pi * (x))/360 ))
+
+def cos_adjust_min_at_0(x): # When x = 180, score = 1. When x = 0, score = 0.
+    return (1/2) * (1 + np.cos( (2*np.pi * (x - 180))/360 ))
+
+# I've flipped this function to return to the "cost" model, where we want to minimize sum of distances and angles. 
+# Then, at the end we subtract the cost from 20 to get a fitness score (where 20 is perfect fit).
 scoring_function = SculptGeometricScoringFunction(
-    function = lambda structure: (Score_A_X_bond(structure))**2 
+    function = lambda design: max(100 - (Score_A_X_bond(design)**2 + cos_adjust_min_at_0(Score_A_X_angle(design)) + cos_adjust_min_at_0(Score_A_X_angle2(design)) + cos_adjust_min_at_0(Score_A_X_dihedral(design)) ), 0)
+) 
+
+######################################################################################
+################# DEFINING THE SELECTION, MUTATION, and CROSSOVER OPERATORS ##########
+######################################################################################
+
+# These will be used for folding and fixing structures before scoring:
+folder = SculptFolder(model='Boltz-2', add_hydrogens=True)
+fixers = [SculptResidueFlipper(target_atom=B_H, flip_atom=A_OD1)]
+
+# Selection:
+selector = TournamentSelection(tournament_size=3)
+
+# Mutation:
+fixed_residues = "A99" # Which residues do we allow to change?
+input_structures_dir = Path('./data/1OHP_monomer/')
+ligand_reference = input_structures_dir / 'KEMP1_TSA_h.sdf'
+# mutator = DirectedMutation(
+#             mutation_rate=0.25,
+#             resequencer=    SculptResequencer(model='LASErMPNN', num_sequences=1, 
+#                                             fixed_residues=fixed_residues),
+#             optimizer=      SculptOptimizer(custom_bonds=[A_X_bond],
+#                                             custom_torsions=[A_X_torsion],
+#                                             custom_angles=[A_X_angle, A_X_angle2],
+#                                             full_sim=True), 
+#             sdf_files=[ligand_reference],
+#             folder=         folder
+# )
+mutator = SimpleAndDirectedMutation( 
+
+        # Simple Mutation params
+        simple_mutation_rate = 0.5,
+        mutations_per_sequence = 1,
+        fixed_residues = fixed_residues,
+        
+        # Directed Mutation params
+        directed_mutation_rate = 0.25,
+        resequencer =   SculptResequencer(model='LASErMPNN', num_sequences=1, 
+                                        fixed_residues=fixed_residues),
+        optimizer =     SculptOptimizer(custom_bonds=[A_X_bond],
+                                        custom_torsions=[A_X_torsion],
+                                        custom_angles=[A_X_angle, A_X_angle2],
+                                        full_sim=True), 
+        sdf_files=[ligand_reference],
+        folder=         folder
 )
+
+# Crossover:
+crossover = SpatialCrossover(crossover_rate=0.5)
+
+# This is just to fill out our population:
+initial_population_mutator = SimpleMutation(mutation_rate=1.0, mutations_per_sequence=30, temperature=2.0, fixed_residues=fixed_residues)
+
 
 ########################################################################################
 ################################ INPUTS AND OUTPUTS ####################################
 ########################################################################################
-input_structures_dir = Path('./data/from_run_14/')
-run_dir = Path('./run_15/')
+
+input_structures_dir = Path('./data/1OHP_monomer/')
+run_dir = Path('./1OHP_combinedmutants25p_spatialxover_30pop_dsquared100max_3xtournament_fix_boltz2_laser_fliptorsion_1/')
+#run_dir = Path('./testnewcode_2/')
 
 # Ligand information
-ligand_reference = input_structures_dir / 'KEMP1_h.sdf'
-input_smiles = 'CC1=CC(=O)OC2=C1C=CC3=C2[NH]N=N3' #KEMP1_TSA
+#ligand_reference = input_structures_dir / 'KEMP1_TSA_h.sdf'
 
-# Which residues do we allow to change?
-fixed_residues = "A37"
 
-# Pipeline parameters
-num_cycles = 15
-lmpnn_design_num = 10      # Number of sequences to generate per structure (x5 Chai per sequence)
-top_designs_num = 3       # Number of top designs to keep per cycle
-#lmpnn_design_num = 1      # Number of sequences to generate per structure (x5 Chai per sequence)
-#top_designs_num = 1       # Number of top designs to keep per cycle
+Sculpt( 
+        # folding
+        folder=folder,
+        fixers=fixers,
 
-structure_input_dir = Path(input_structures_dir)
-current_input_designs = []
+        # ga operators
+        selector=selector,
+        mutator=mutator,
+        crossover=crossover,
+        initial_population_mutator=initial_population_mutator,
 
-from sculpt.tasks.fold import SculptHydrogenAdder
-from sculpt.design import Design
+        # scoring
+        scoring_function=scoring_function,
 
-# new_design = Design(name='test')
-# new_design.load_structure(Path('run_1') / 'cycle_0' / '1_Optimize' / '5RGA_KEMP1_input_opt.cif')
-# new_design.structure.standardize(standard_molecules=[], renumber=True)
-# new_design.structure_file('test.cif')
+        # params
+        num_cycles=15,
+        pop_size=30,
+        
+        # inputs
+        structure_input_dir=input_structures_dir,
+        run_dir=run_dir,
+        sdf_files=[ligand_reference],
+)
 
-Sculpt( optimizer=optimizer,
-       resequencer=SculptResequencer(model='LigandMPNN', num_sequences=lmpnn_design_num, fixed_residues=fixed_residues),
-       folder=SculptFolder(model='Chai-1', add_hydrogens=True),
-       scoring_function=scoring_function,
-       structure_input_dir=input_structures_dir,
-       num_cycles=num_cycles,
-       run_dir=run_dir,
-       sdf_files=[ligand_reference],
-       top_designs_num=top_designs_num
-       )

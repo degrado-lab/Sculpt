@@ -3,9 +3,11 @@ from typing import List, Union
 
 import tempfile
 from pathlib import Path
+import os
 import ribbon
 
 from sculpt.design import Design
+from sculpt.id import generate_id
 from shim import StandardMolecule
 
 class SculptOptimizer:
@@ -51,11 +53,24 @@ class SculptOptimizer:
                 custom_bonds=self.custom_bonds,
                 custom_torsions=self.custom_torsions,
                 custom_angles=self.custom_angles,
-                minimize_only= True, # Eventually, add the full_sim flag. This will require me to pull coords in from a DCD.
+                minimize_only= not self.full_sim, # Eventually, add the full_sim flag. This will require me to pull coords in from a DCD.
             ).run()
-
+            
+            ### DEBUG
+            # list all files in the directory:
+            print("Files in temp_dir:", os.listdir(temp_dir))
             # What's the file that has our optimized PDB?
             output_pdb_file = Path(temp_dir) / "optimized_EM.pdb"
+
+            # If we did a full simulation, we want to make a PDB from the last frame of the DCD:
+            if self.full_sim:
+                import mdtraj as md
+                output_pdb_file = Path(temp_dir) / "optimized.pdb"
+                output_dcd_file = Path(temp_dir) / "optimized_aligned.dcd"
+                if output_dcd_file.exists():
+                    traj = md.load(str(output_dcd_file), top=str(output_pdb_file))
+                    output_pdb_file = Path(temp_dir) / "optimized_final_frame.pdb"
+                    traj[-1].save_pdb(str(output_pdb_file))
 
             # Create the output Design object:
             if unique_naming:

@@ -17,6 +17,7 @@ setup(
     install_requires=[
         # Ribbon is required by the library (see README). Pin a permissive minimum.
         "ribbon-toolkit>=0.3.1",
+        "mdtraj",
     ],
     python_requires=">=3.12",
     license="MIT",

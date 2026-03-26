@@ -10,7 +10,7 @@ import random
 from shim import StandardMolecule
 
 class SculptFolder:
-    """Folder class for folding FASTA files and ligands using Chai-1.
+    """Folder class for folding FASTA files and ligands using Chai-1 or Boltz-2.
     NB. Known bug: Ligands get different resnames and chain IDs after adding Hydrogens with Reduce.
     """
     
@@ -18,7 +18,7 @@ class SculptFolder:
         """Initialize the SculptFolder with model and number of structures.
         
         Args:
-            model: The folding model to use (default 'Chai-1').
+            model: The folding model to use ('Chai-1' or 'Boltz-2', default 'Chai-1').
             num_structures: The number of structures to generate per sequence (default 5).
         """
         self.model = model
@@ -26,7 +26,7 @@ class SculptFolder:
         self.num_structures = num_structures
 
     def fold(self, design: Design, ligand_sdf_files: List[str] = []):
-        """Use Chai-1 to fold the FASTA file and optimize the ligand structure.
+        """Use Chai-1 or Boltz-2 to fold the FASTA file and optimize the ligand structure.
         
         Args:
             fasta_file: The input FASTA file to fold.
@@ -49,16 +49,36 @@ class SculptFolder:
         with tempfile.TemporaryDirectory() as temp_dir, \
                 design.temp_sequence_file() as fasta_file:
 
-            ribbon.Chai1(
-                    fasta_file = fasta_file,   # A single input FASTA. If there are multiple sequences, they will be folded in the same structure.
-                    output_dir = str(Path(temp_dir) / "folded"),               # Where the outputs will be stored
-                    smiles_string = ligand_smiles,      # SMILES string of our ligand
-                    num_ligands = 1,                    # How many copies of our ligand?
-                    device = 'gpu'                      # Run on GPU (necessary for Chai-1)
+            if self.model == 'Chai-1':
+                ribbon.Chai1(
+                        fasta_file = fasta_file,   # A single input FASTA. If there are multiple sequences, they will be folded in the same structure.
+                        output_dir = str(Path(temp_dir) / "folded"),               # Where the outputs will be stored
+                        smiles_string = ligand_smiles,      # SMILES string of our ligand
+                        num_ligands = 1,                    # How many copies of our ligand?
+                        device = 'gpu'                      # Run on GPU (necessary for Chai-1)
+                    ).run()
+    
+                # Grab the output structures (prefix "_model_X.pdb") and copy them to the output directory. Change prefix to "_0, _1," etc.
+                output_files = sorted( (Path(temp_dir) / "folded").glob('*_idx_*.cif') )
+                if len(output_files) > self.num_structures:
+                    output_files = output_files[:self.num_structures]
+            elif self.model == 'Boltz-2':
+                smiles_list = [ligand_smiles] if ligand_smiles else []
+                ribbon.Boltz2(
+                    fasta_file = fasta_file,
+                    output_dir = str(Path(temp_dir) / "folded"),
+                    smiles_list = smiles_list,
+                    device = 'gpu'
                 ).run()
+                
+                output_files = sorted( (Path(temp_dir) / "folded").rglob('*_model_*.cif') )
+                if not output_files:
+                    output_files = sorted( (Path(temp_dir) / "folded").rglob('*_model_*.pdb') )
+                if len(output_files) > self.num_structures:
+                    output_files = output_files[:self.num_structures]
+            else:
+                raise ValueError(f"Unknown folding model: {self.model}")
 
-            # Grab the output structures (prefix "_model_X.pdb") and copy them to the output directory. Change prefix to "_0, _1," etc.
-            output_files = sorted( (Path(temp_dir) / "folded").glob('*_idx_*.cif') )
             print(output_files)
 
             if self.add_hydrogens:
@@ -80,7 +100,7 @@ class SculptFolder:
                 fold_design.load_structure(file)
 
                 # Add to the history:
-                fold_design.history.append("Folded using Chai-1.")
+                fold_design.history.append(f"Folded using {self.model}.")
                 # if self.add_hydrogens:
                 #     fold_design.history.append("Hydrogens added using Reduce.")
 
@@ -141,7 +161,7 @@ class SculptFolder:
             design: The Design object to fold.
             ligand_sdf_files: Optional list of SDF files containing ligands to add hydrogens to.
         """
-        self.fold(design, ligand_sdf_files=ligand_sdf_files)
+        return self.fold(design, ligand_sdf_files=ligand_sdf_files)
 
 
 class DummyFolder:
