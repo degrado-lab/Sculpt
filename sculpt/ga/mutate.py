@@ -273,16 +273,15 @@ class DirectedMutation:
                     h_adder = self.hydrogen_adder
                     child = h_adder.add_hydrogens(child, ligand_sdf_files=self.sdf_files)
 
-                # DEBUG
-                # # write temporary structure file:
-                # child.structure_file("temp_structure.pdb")
-                # standard_molecules = [StandardMolecule(structure_file=sdf_file) for sdf_file in self.sdf_files]
-                # hydrogens_on_input_files = False # Assume no hydrogens initially
-                # child.structure.standardize(standard_molecules=standard_molecules, use_hydrogens=hydrogens_on_input_files)
-
-                # 2) Energy-minimize with user-provided constraints
-                optimizer = self.optimizer
-                child = optimizer.optimize(child, sdf_files=self.sdf_files, unique_naming=unique_naming)
+                try:
+                    # 2) Energy-minimize with user-provided constraints
+                    optimizer = self.optimizer
+                    child = optimizer.optimize(child, sdf_files=self.sdf_files, unique_naming=unique_naming)
+                except Exception as e:
+                    print(f"Error in energy minimization: {e}")
+                    # write out offending structure:
+                    child.structure_file(f"{child.name}_EM_error.pdb")
+                    continue
                 
                 if save_EM_structures_dir:
                     save_path = Path(save_EM_structures_dir) / f"{child.name}_EM.pdb"

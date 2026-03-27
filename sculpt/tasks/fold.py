@@ -167,7 +167,7 @@ class SculptFolder:
 class DummyFolder:
     """Dummy Folder class for testing, substituting Chai-1 generation with fetching an existing mock design."""
     
-    def __init__(self, model='Chai-1', num_structures=5, add_hydrogens=False):
+    def __init__(self, model='Chai-1', num_structures=5, add_hydrogens=False, data_dir=None):
         """Initialize the DummyFolder.
         
         Args:
@@ -179,7 +179,7 @@ class DummyFolder:
         self.num_structures = num_structures
         
         # Path to the specific mock data folder
-        self.data_dir = Path(__file__).resolve().parent.parent.parent / "data" / "1OHP_mutants"
+        self.data_dir = Path(data_dir)
 
     def fold(self, design: Design, ligand_sdf_files: List[str] = []):
         """Pretend to fold the FASTA file by randomly picking existing CIF files.
