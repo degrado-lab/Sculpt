@@ -18,6 +18,7 @@ setup(
         # Ribbon is required by the library (see README). Pin a permissive minimum.
         "ribbon-toolkit>=0.3.1",
         "mdtraj",
+        "matplotlib",
     ],
     python_requires=">=3.12",
     license="MIT",
