@@ -8,17 +8,23 @@ from sculpt.id import generate_id
 
 from shim.structure import ShimStructure
 
+from typing import List
+
 class SculptResequencer:
     """Resequencer class for generating new sequences from input structures.
     """
     
-    def __init__(self, model='LigandMPNN', num_sequences=5, fixed_residues: str = None):
+    def __init__(self, model='LigandMPNN', num_sequences=5, fixed_residues: str = None, use_queue=False, scheduler=None, queue_args=None, scratch_dir=None):
         """Initialize the SculptResequencer with model and number of sequences.
         
         Args:
             model: The folding model to use (default 'LigandMPNN').
             num_sequences: The number of sequences to generate (default 5).
             fixed_residues: A string specifying fixed residues (default None). (e.g. "A1 A2 A3")
+            use_queue: Set to True to queue the jobs via a scheduler.
+            scheduler: The name of the scheduler (e.g., 'SLURM', 'SGE') used if use_queue=True.
+            queue_args: Additional arguments passed to queue() (e.g., node_name, queue, time).
+            scratch_dir: Custom directory to act as a persistent workspace instead of tempdir.
         """
         if model not in ['LigandMPNN', 'LASErMPNN']:
             raise ValueError(f"Model '{model}' not recognized. Choose 'LigandMPNN' or 'LASErMPNN'.")
@@ -26,89 +32,109 @@ class SculptResequencer:
         self.model = model
         self.num_sequences = num_sequences
         self.fixed_residues = fixed_residues
+        self.use_queue = use_queue
+        self.scheduler = scheduler
+        self.queue_args = queue_args or {}
+        self.scratch_dir = scratch_dir
 
     def resequence(self, design: Design, unique_naming: bool = False):
-        """Use LigandMPNN to generate new sequences from the input structure.
+        """Use LigandMPNN to generate new sequences from the input structure."""
+        return self.resequence_batch([design], unique_naming=unique_naming)[0]
 
-        Args:
-            design: The Design object to generate sequences from.
-        """
-        with tempfile.TemporaryDirectory() as temp_dir:
+    def resequence_batch(self, designs: List[Design], unique_naming: bool = False):
+        """Use LigandMPNN to generate new sequences from a batch of input structures."""
+        import contextlib
+        import os
+        
+        if self.scratch_dir is not None:
+            Path(self.scratch_dir).mkdir(parents=True, exist_ok=True)
+            dir_context = contextlib.nullcontext(self.scratch_dir)
+        else:
+            dir_context = tempfile.TemporaryDirectory()
+
+        with dir_context as work_dir:
+            work_dir = Path(work_dir)
+            job_ids = []
+            tasks = []
 
             if self.fixed_residues is not None:
                 extra_args = f"--fixed_residues \"{self.fixed_residues}\""
             else:
                 extra_args = ""
 
-            if self.model == 'LigandMPNN':
-                with design.temp_structure_file() as input_structure_file:
-                    print(f"Running LigandMPNN on {input_structure_file}...")
-                    ribbon.LigandMPNN(
+            for design in designs:
+                design_dir = work_dir / design.name
+                design_dir.mkdir(parents=True, exist_ok=True)
+                input_structure_file = design_dir / f"{design.name}_in.pdb"
+                
+                if self.model == 'LigandMPNN':
+                    design.structure_file(str(input_structure_file))
+                    task = ribbon.LigandMPNN(
                         structure_list=[str(input_structure_file)],
-                        output_dir=temp_dir,
+                        output_dir=str(design_dir),
                         num_designs=self.num_sequences,
                         extra_args=extra_args
-                    ).run()
-            
-            elif self.model == 'LASErMPNN':
-                # First, we create 5 new sequences for this structure:
+                    )
+                elif self.model == 'LASErMPNN':
+                    all_residues = design.structure.get_residues()
+                    for chain_id, res_num, _ in all_residues:
+                        if self.fixed_residues is not None and f"{chain_id}{res_num}" in self.fixed_residues:
+                            design.structure.set_b_factor(chain_id, res_num, 1.0)
+                        else:
+                            design.structure.set_b_factor(chain_id, res_num, 0.0)
 
-                # Make a copy of the structure, where we set the b-factors to 1.0 for all fixed residues:
-                all_residues = design.structure.get_residues()
-                for chain_id, res_num, _ in all_residues:
-                    if self.fixed_residues is not None and f"{chain_id}{res_num}" in self.fixed_residues:
-                        design.structure.set_b_factor(chain_id, res_num, 1.0)
-                    else:
-                        design.structure.set_b_factor(chain_id, res_num, 0.0)
-
-                with design.temp_structure_file(suffix='.pdb') as input_structure_file:
-                    print(f"Running LASErMPNN on {input_structure_file}...")
-                    ribbon.LASErMPNN(
+                    design.structure_file(str(input_structure_file))
+                    task = ribbon.LASErMPNN(
                         structure_list=[str(input_structure_file)],
-                        output_dir=temp_dir,
+                        output_dir=str(design_dir),
                         num_designs=self.num_sequences,
                         fix_beta= True if self.fixed_residues else False,
-                    ).run()
+                    )
                 
-                    # This will output PDBs. Convert to FASTAs using shim:
-                    lasermpnn_output_dir = Path(temp_dir) / input_structure_file.stem
-
-                    # list files in directory:
-                    for file in lasermpnn_output_dir.iterdir():
-                        print(' -', file.name)
-
-                    # Make seqs_split directory:
-                    (Path(temp_dir) / 'seqs_split').mkdir(exist_ok=True)
-
-                    for pdb_file in lasermpnn_output_dir.glob('*.pdb'):
-                        new_structure = ShimStructure(structure_file=pdb_file)
-                        fasta_file = Path(temp_dir) / 'seqs_split' / (pdb_file.stem + '.fasta')
-                        print(f"Converting {pdb_file} to {fasta_file}...")
-                        new_structure.to_fasta(fasta_file)
-
-            # Sequences are in the [tempfile]/sequences_split/ directory. 
-            # We'll create a new Design for each sequence:
-            resequenced_designs = []
-            output_fasta_temp_dir = Path(temp_dir) / 'seqs_split'
-
-            for fasta_file in output_fasta_temp_dir.glob('*.fasta'):
-                # Create the output Design object:
-                if unique_naming:
-                    output_name = generate_id()
+                tasks.append(task)
+                if self.use_queue:
+                    job_ids.append(task.queue(scheduler=self.scheduler, **self.queue_args))
                 else:
-                    output_name = design.name + "_reseq"
+                    task.run()
 
-                # Make the new Design object:
-                reseq_design = design.copy(set_parent=True)
-                reseq_design.name = output_name
-                reseq_design.load_sequence(fasta_file)
+            if self.use_queue and job_ids:
+                ribbon.wait_for_jobs(job_ids, scheduler=self.scheduler)
+                
+            all_resequenced_designs = []
+            for design in designs:
+                design_dir = work_dir / design.name
+                
+                if self.model == 'LASErMPNN':
+                    # Convert to FASTAs using shim:
+                    lasermpnn_output_dir = design_dir / f"{design.name}_in"
+                    seqs_split_dir = design_dir / 'seqs_split'
+                    seqs_split_dir.mkdir(exist_ok=True)
 
-                # Add to the history:
-                reseq_design.history.append("Resequenced using LigandMPNN.")
+                    if lasermpnn_output_dir.exists():
+                        for pdb_file in lasermpnn_output_dir.glob('*.pdb'):
+                            new_structure = ShimStructure(structure_file=str(pdb_file))
+                            fasta_file = seqs_split_dir / (pdb_file.stem + '.fasta')
+                            new_structure.to_fasta(str(fasta_file))
 
-                resequenced_designs.append(reseq_design)
+                resequenced_designs = []
+                output_fasta_temp_dir = design_dir / 'seqs_split'
 
-        return resequenced_designs
+                if output_fasta_temp_dir.exists():
+                    for fasta_file in output_fasta_temp_dir.glob('*.fasta'):
+                        if unique_naming:
+                            output_name = generate_id()
+                        else:
+                            output_name = design.name + "_reseq"
+
+                        reseq_design = design.copy(set_parent=True)
+                        reseq_design.name = output_name
+                        reseq_design.load_sequence(str(fasta_file))
+                        reseq_design.history.append(f"Resequenced using {self.model}.")
+                        resequenced_designs.append(reseq_design)
+                
+                all_resequenced_designs.append(resequenced_designs)
+
+        return all_resequenced_designs
 
     def __call__(self, design: Design, unique_naming: bool = False):
         """Allow the Resequencer to be called directly.

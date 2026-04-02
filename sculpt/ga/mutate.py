@@ -245,7 +245,7 @@ class DirectedMutation:
         self.sdf_files = sdf_files
 
     def mutate(self, population: Sequence[Design], unique_naming: bool = False, save_EM_structures_dir: str = None) -> List[Design]:
-        """Perform directed mutation on a population.
+        """Perform batched directed mutation on a population.
         
         Args:
             population: Sequence of Design objects to mutate.
@@ -255,51 +255,81 @@ class DirectedMutation:
             A new list of mutated (or original) Design objects.
         """
         
-
         mutated_pop = []
+        to_mutate = []
+
+        # 1. Filter
         for parent in population:
-            # Decide if this child mutates
             if random.random() < self.mutation_rate:
-                # Start with a copy
-                child = parent.copy()
-                
-                # 1) Fold/Hydrogens
-                if self.refold or child.structure is None:
-                    folder = self.folder
-                    folded_results = folder.fold(child, ligand_sdf_files=self.sdf_files)
-                    if folded_results:
-                        child = folded_results[0]
-                elif self.hydrogen_adder:
-                    h_adder = self.hydrogen_adder
-                    child = h_adder.add_hydrogens(child, ligand_sdf_files=self.sdf_files)
-
-                try:
-                    # 2) Energy-minimize with user-provided constraints
-                    optimizer = self.optimizer
-                    child = optimizer.optimize(child, sdf_files=self.sdf_files, unique_naming=unique_naming)
-                except Exception as e:
-                    print(f"Error in energy minimization: {e}")
-                    # write out offending structure:
-                    child.structure_file(f"{child.name}_EM_error.pdb")
-                    continue
-                
-                if save_EM_structures_dir:
-                    save_path = Path(save_EM_structures_dir) / f"{child.name}_EM.pdb"
-                    child.structure_file(save_path)
-
-                # 3) Run LigandMPNN/LaserMPNN to generate the new sequence
-                resequencer = self.resequencer
-                # Resequencer returns a list of designs
-                reseq_results = resequencer.resequence(child, unique_naming=unique_naming)
-                if reseq_results:
-                    child = reseq_results[0]
-                    child.history.append(f"DirectedMutation applied (model={self.folder.model}, rate={self.mutation_rate})")
-                
-                mutated_pop.append(child)
+                to_mutate.append(parent.copy())
             else:
-                # No mutation, add a copy of the parent to the new population
                 mutated_pop.append(parent.copy())
+
+        if not to_mutate:
+            return mutated_pop
+
+        # 2. Divide for processing requirements
+        needs_folding = []
+        needs_hydrogens = []
+        ready_for_EM = []
+
+        for child in to_mutate:
+            if self.refold or child.structure is None:
+                needs_folding.append(child)
+            elif self.hydrogen_adder:
+                needs_hydrogens.append(child)
+            else:
+                ready_for_EM.append(child)
+
+        # 3. Batch Fold
+        if needs_folding and self.folder:
+            folded_results = self.folder.fold_batch(needs_folding, ligand_sdf_files=self.sdf_files)
+            for folded_children in folded_results:
+                if folded_children:
+                    ready_for_EM.append(folded_children[0])
+
+        # 4. Add Hydrogens Sequentially (no batch pipeline available at module level yet)
+        if needs_hydrogens and self.hydrogen_adder:
+            for child in needs_hydrogens:
+                ready_for_EM.append(self.hydrogen_adder.add_hydrogens(child, ligand_sdf_files=self.sdf_files))
+
+        if not ready_for_EM:
+            return mutated_pop
+
+        # 5. Batch Optimize
+        if self.optimizer:
+            try:
+                # optimize_batch internally maps 1:1 using zip across inputs so ordering is preserved across identical lengths
+                ready_for_EM = self.optimizer.optimize_batch(ready_for_EM, sdf_files=self.sdf_files, unique_naming=unique_naming)
+            except Exception as e:
+                print(f"Error in energy minimization batch: {e}")
+                for child in ready_for_EM:
+                    child.structure_file(f"{child.name}_EM_batch_error.pdb")
+                return mutated_pop
         
+        if save_EM_structures_dir:
+            from pathlib import Path
+            save_dir = Path(save_EM_structures_dir)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            for child in ready_for_EM:
+                save_path = save_dir / f"{child.name}_EM.pdb"
+                child.structure_file(str(save_path))
+
+        # 6. Batch Resequence
+        if self.resequencer:
+            reseq_results = self.resequencer.resequence_batch(ready_for_EM, unique_naming=unique_naming)
+            
+            # Merge back to population
+            for child_list in reseq_results:
+                if child_list:
+                    final_child = child_list[0]
+                    model_name = self.folder.model if self.folder else "N/A"
+                    final_child.history.append(f"DirectedMutation applied (model={model_name}, rate={self.mutation_rate})")
+                    mutated_pop.append(final_child)
+        else:
+             # Just pass them directly onto the output layer if no resequencer was bundled (for isolated config flexibility via pipeline structure inputs)
+             mutated_pop.extend(ready_for_EM)
+
         return mutated_pop
 
     def __call__(self, population: Sequence[Design], unique_naming: bool = False,  save_EM_structures_dir: str = None) -> List[Design]:

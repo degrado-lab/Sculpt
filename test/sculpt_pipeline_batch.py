@@ -162,7 +162,15 @@ scoring_function = SculptGeometricScoringFunction(
 ######################################################################################
 
 # These will be used for folding and fixing structures before scoring:
-folder = SculptFolder(model='Boltz-2', add_hydrogens=True)
+folder = SculptFolder(
+        model='Boltz-2',
+        num_structures=1, 
+        add_hydrogens=True,
+        use_queue=True,
+        scheduler="SLURM"
+    )
+#folder = DummyFolder(data_dir='../run_data/1OHP_mutants/')
+
 fixers = [SculptResidueFlipper(target_atom=B_H, flip_atom=A_OD1)]
 
 # Selection:
@@ -187,19 +195,26 @@ mutator = SimpleAndDirectedMutation(
 
         # Simple Mutation params
         simple_mutation_rate = 0.5,
-        mutations_per_sequence = 0.25,
+        mutations_per_sequence = 1,
         fixed_residues = fixed_residues,
         
         # Directed Mutation params
         directed_mutation_rate = 0.25,
+
         resequencer =   SculptResequencer(model='LASErMPNN', num_sequences=1, 
-                                        fixed_residues=fixed_residues),
+                                        fixed_residues=fixed_residues,
+                                        scheduler="SLURM",
+                                        use_queue=True),
+                                        
         optimizer =     SculptOptimizer(custom_bonds=[A_X_bond],
                                         custom_torsions=[A_X_torsion],
                                         custom_angles=[A_X_angle, A_X_angle2],
-                                        full_sim=True), 
+                                        full_sim=True, 
+                                        scheduler="SLURM",
+                                        use_queue=True),
+
         sdf_files=[ligand_reference],
-        folder=         folder
+        folder=         folder,
 )
 
 # Crossover:
@@ -214,7 +229,7 @@ initial_population_mutator = SimpleMutation(mutation_rate=1.0, mutations_per_seq
 ########################################################################################
 
 input_structures_dir = Path('./data/1OHP_monomer/')
-run_dir = Path('./test2_1OHP_combinedmutants25p_spatialxover_30pop_dsquared100max_7xtournament_fix_boltz2_laser_fliptorsion_2/')
+run_dir = Path('./test4_1OHP_combinedmutants25p_spatialxover_30pop_dsquared100max_7xtournament_fix_boltz2_laser_fliptorsion_2/')
 #run_dir = Path('./testnewcode_2/')
 
 # Ligand information

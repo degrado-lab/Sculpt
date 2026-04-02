@@ -17,7 +17,7 @@ class SculptOptimizer:
     with custom bonds, angles, and torsions as restraints.
     """
     
-    def __init__(self, custom_bonds=[], custom_angles=[], custom_torsions=[], full_sim: bool = False):
+    def __init__(self, custom_bonds=[], custom_angles=[], custom_torsions=[], full_sim: bool = False, use_queue=False, scheduler=None, queue_args=None, scratch_dir=None):
         """Initialize the SculptOptimizer with custom restraints.
         
         Args:
@@ -25,77 +25,110 @@ class SculptOptimizer:
             custom_angles: List of custom angle restraints to apply during optimization.
             custom_torsions: List of custom torsion restraints to apply during optimization.
             full_sim: Not implemented. If True, run a full simulation instead of just minimization (1 ns). This can be useful to "shakeout" the structure to better satisfy difficult restraints.
+            use_queue: Set to True to queue the jobs via a scheduler.
+            scheduler: The name of the scheduler (e.g., 'SLURM', 'SGE') used if use_queue=True.
+            queue_args: Additional arguments passed to queue() (e.g., node_name, queue, time).
+            scratch_dir: Custom directory to act as a persistent workspace instead of tempdir.
         """
         self.custom_bonds = custom_bonds
         self.custom_angles = custom_angles
         self.custom_torsions = custom_torsions
         self.full_sim = full_sim  # By default, just do minimization
+        self.use_queue = use_queue
+        self.scheduler = scheduler
+        self.queue_args = {'gpus': 1, 'mem': '8G'}
+        if queue_args is not None:
+            for key, value in queue_args.items():
+                self.queue_args[key] = value
+        self.scratch_dir = scratch_dir
 
     def optimize(self, design: Design, sdf_files: List[str] = [], unique_naming: bool = False) -> Design:
-        """Use EasyMD to optimize the structure file using custom restraints.
+        """Use EasyMD to optimize the structure file using custom restraints."""
+        return self.optimize_batch([design], sdf_files=sdf_files, unique_naming=unique_naming)[0]
+    def optimize_batch(self, designs: List[Design], sdf_files: List[str] = [], unique_naming: bool = False) -> List[Design]:
+        """Use EasyMD to optimize a batch of structure files using custom restraints."""
+        import contextlib
+        import os
         
-        Args:
-            design: The Design structure file to optimize. Must have a 'structure' attribute.
-            sdf_files: A list of SDF files to use for ligand parameterization.
-            unique_naming: If True, generate a unique name for the output Design.
-        Returns:
-            A new Design object with the optimized structure.
-        """
-        # Create a temp directory:
-        with tempfile.TemporaryDirectory() as temp_dir, \
-             design.temp_structure_file() as temp_structure_file:
+        if self.scratch_dir is not None:
+            Path(self.scratch_dir).mkdir(parents=True, exist_ok=True)
+            dir_context = contextlib.nullcontext(self.scratch_dir)
+        else:
+            dir_context = tempfile.TemporaryDirectory()
 
-            ribbon.EasyMD(
-                input_file=temp_structure_file,
-                output_prefix=str(Path(temp_dir) / "optimized"),
-                ligand_files=sdf_files,
-                duration=1,
-                custom_bonds=self.custom_bonds,
-                custom_torsions=self.custom_torsions,
-                custom_angles=self.custom_angles,
-                minimize_only= not self.full_sim, # Eventually, add the full_sim flag. This will require me to pull coords in from a DCD.
-            ).run()
+        with dir_context as work_dir:
+            work_dir = Path(work_dir)
+            job_ids = []
+            tasks = []
             
-            ### DEBUG
-            # list all files in the directory:
-            print("Files in temp_dir:", os.listdir(temp_dir))
-            # What's the file that has our optimized PDB?
-            output_pdb_file = Path(temp_dir) / "optimized_EM.pdb"
+            for design in designs:
+                design_dir = work_dir / design.name
+                design_dir.mkdir(parents=True, exist_ok=True)
+                
+                temp_structure_file = design_dir / f"{design.name}_opt_in.cif"
+                design.structure_file(str(temp_structure_file))
+                
+                output_prefix = design_dir / "optimized"
+                
+                task = ribbon.EasyMD(
+                    input_file=str(temp_structure_file),
+                    output_prefix=str(output_prefix),
+                    ligand_files=sdf_files,
+                    duration=1,
+                    custom_bonds=self.custom_bonds,
+                    custom_torsions=self.custom_torsions,
+                    custom_angles=self.custom_angles,
+                    minimize_only= not self.full_sim
+                )
+                tasks.append(task)
+                
+                if self.use_queue:
+                    job_ids.append(task.queue(scheduler=self.scheduler, **self.queue_args))
+                else:
+                    task.run()
 
-            # If we did a full simulation, we want to make a PDB from the last frame of the DCD:
-            if self.full_sim:
-                import mdtraj as md
-                output_pdb_file = Path(temp_dir) / "optimized.pdb"
-                output_dcd_file = Path(temp_dir) / "optimized_aligned.dcd"
-                if output_dcd_file.exists():
-                    traj = md.load(str(output_dcd_file), top=str(output_pdb_file))
-                    output_pdb_file = Path(temp_dir) / "optimized_final_frame.pdb"
-                    traj[-1].save_pdb(str(output_pdb_file))
+            if self.use_queue and job_ids:
+                ribbon.wait_for_jobs(job_ids, scheduler=self.scheduler)
 
-            # Create the output Design object:
-            if unique_naming:
-                output_name = generate_id()
-            else:
-                output_name = design.name + "_opt"
+            optimized_designs = []
+            for design in designs:
+                design_dir = work_dir / design.name
+                
+                ### DEBUG
+                # print("Files in temp_dir:", os.listdir(design_dir))
+                
+                output_pdb_file = design_dir / "optimized_EM.pdb"
 
-            # Make the new Design object:
-            optimized_design = design.copy(set_parent=True)
-            optimized_design.name = output_name
-            optimized_design.load_structure(output_pdb_file)
+                if self.full_sim:
+                    import mdtraj as md
+                    output_pdb_file = design_dir / "optimized.pdb"
+                    output_dcd_file = design_dir / "optimized_aligned.dcd"
+                    if output_dcd_file.exists():
+                        traj = md.load(str(output_dcd_file), top=str(output_pdb_file))
+                        output_pdb_file = design_dir / "optimized_final_frame.pdb"
+                        traj[-1].save_pdb(str(output_pdb_file))
 
-            # Standardize the structure to change auth_seq_id to label_seq_id:
-            standard_molecules = [StandardMolecule(structure_file = sdf) for sdf in sdf_files]
-            optimized_design.structure.standardize(standard_molecules=standard_molecules, use_hydrogens=True, renumber=True)
+                if unique_naming:
+                    output_name = generate_id()
+                else:
+                    output_name = design.name + "_opt"
 
-            # Add to the history:
-            optimized_design.history.append("Optimized using EasyMD. \n"
-                                            "Custom bonds: {}, \n"
-                                            "Custom angles: {}, \n"
-                                            "Custom torsions: {}".format(
-                self.custom_bonds, self.custom_angles, self.custom_torsions
-            ))
+                optimized_design = design.copy(set_parent=True)
+                optimized_design.name = output_name
+                optimized_design.load_structure(output_pdb_file)
 
-        return optimized_design
+                standard_molecules = [StandardMolecule(structure_file=sdf) for sdf in sdf_files]
+                optimized_design.structure.standardize(standard_molecules=standard_molecules, use_hydrogens=True, renumber=True)
+
+                optimized_design.history.append("Optimized using EasyMD. \n"
+                                                "Custom bonds: {}, \n"
+                                                "Custom angles: {}, \n"
+                                                "Custom torsions: {}".format(
+                    self.custom_bonds, self.custom_angles, self.custom_torsions
+                ))
+                optimized_designs.append(optimized_design)
+
+        return optimized_designs
 
     def __call__(self, structure_file, output_file, sdf_files = []):
         """Allow the optimizer to be called directly.

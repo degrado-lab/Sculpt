@@ -49,10 +49,12 @@ def _write_statistics(generation_designs, parents_reference, run_dir: Path, cycl
     write_header = not all_sequences_csv.exists()
     with open(all_sequences_csv, 'a') as f:
         if write_header:
-            f.write('cycle,design_name,parents,sequence,fitness\n')
+            f.write('cycle,design_name,parents,sequence,fitness,history\n')
         for d in generation_designs:
+            history_str = ",".join([str(h) for h in d.history])
+            history_str = history_str.replace('\n', ' ') # strip endlines:
             seq_val = "".join([line.strip() for line in d.sequence.splitlines() if not line.startswith(">")])
-            f.write(f'{cycle_idx},{d.name},{[p.name for p in d.parents]},{seq_val},{d.score}\n')
+            f.write(f'{cycle_idx},{d.name},{[p.name for p in d.parents]},{seq_val},{d.score},{history_str}\n')
         
     # Histogram of fitness values (raw data)
     with open(cycle_dir / 'fitness_values.csv', 'w') as f:
@@ -187,16 +189,16 @@ def sculpt(
             (cycle_dir / step).mkdir(parents=True, exist_ok=True)
 
         ### Step 0: Calculate Fitness
-        for design in current_generation:
-
-            # Fold design, usually 5x structures per design
-            folds = folder.fold(design, ligand_sdf_files=sdf_files)
-
+        # Fold all designs natively in the generation
+        all_folds = folder.fold_batch(current_generation, ligand_sdf_files=sdf_files)
+        
+        for design, folds in zip(current_generation, all_folds):
             # Fix structures using the objects in fixers:
             for fixer in fixers:
                 folds = [fixer(fold) for fold in folds]
             
             # Score each fold
+            # (Note: Geometric scoring happens iteratively here unless score_batch is utilized. Usually scoring is fast.)
             for f in folds: f.score = scoring_function.score(f)
 
             # Average the scores, but keep the best fold
