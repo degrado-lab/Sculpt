@@ -197,6 +197,11 @@ def sculpt(
             for fixer in fixers:
                 folds = [fixer(fold) for fold in folds]
             
+            # if there are no folds, assing a score of nan:
+            if len(folds) == 0:
+                design.score = np.nan
+                continue
+            
             # Score each fold
             # (Note: Geometric scoring happens iteratively here unless score_batch is utilized. Usually scoring is fast.)
             for f in folds: f.score = scoring_function.score(f)

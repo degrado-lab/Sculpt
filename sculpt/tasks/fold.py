@@ -112,7 +112,7 @@ class SculptFolder:
 
             # Wait for all folding jobs to finish
             if self.use_queue and job_ids:
-                ribbon.wait_for_jobs(job_ids, scheduler=self.scheduler)
+                ribbon.wait_for_jobs(job_ids, scheduler=self.scheduler, max_wait=60*60*24)
 
             # Gather output files
             all_output_files = []
