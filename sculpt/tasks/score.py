@@ -13,17 +13,22 @@ class SculptGeometricScoringFunction:
     and returns a geometric score based on structural features.
     """
     
-    def __init__(self, function: callable):
+    def __init__(self, function: callable, scorers: dict = None, aggregator: callable = None):
         """Initialize the scoring function.
         
         Args:
             function: A callable that takes exactly one parameter (Design object)
                      and returns a numeric score.
+            scorers: A dictionary of scorers to be used for scoring. (in the case of multi-state design)
+            aggregator: A callable that takes a dictionary of scores and returns a single score. (in the case of multi-state design)
                      
         Raises:
             ValueError: If the function doesn't take exactly one parameter.
         """
         self.function = function
+        self.scorers = scorers
+        self.aggregator = aggregator
+
         # verify function only has a single parameter:
         if function.__code__.co_argcount != 1:
             raise ValueError("Function must take exactly one parameter, an input Design.")
@@ -37,8 +42,17 @@ class SculptGeometricScoringFunction:
         Returns:
             The numeric score returned by the wrapped function.
         """
-        # Call the function with the structure file
-        return self.function(design)
+        if self.scorers and self.aggregator:
+            scorer_results = {}
+            for name, scorer in self.scorers.items():
+                scorer_results[name] = scorer(design)
+            return self.aggregator(scorer_results)
+
+        elif self.function:
+            # Call the function with the structure file
+            return self.function(design)
+        else:
+            raise ValueError("No valid scoring mechanisms (function or scorers+aggregator) were provided.")
 
     def __call__(self, design: Design):
         """Allow the scoring function to be called directly.
